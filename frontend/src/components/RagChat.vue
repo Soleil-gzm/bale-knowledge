@@ -124,7 +124,7 @@
                   <div v-for="(source, sIndex) in msg.sources" :key="sIndex" class="source-item">
                     <div class="source-meta">
                       <span class="index">#{{ sIndex + 1 }}</span>
-                      <span class="score">相似度: {{ (source.score * 100).toFixed(1) }}%</span>
+                      <span class="score">余弦相似度: {{ source.score.toFixed(4) }}</span>
                     </div>
                     <div class="source-text">{{ source.content }}</div>
                   </div>

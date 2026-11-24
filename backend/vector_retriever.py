@@ -48,7 +48,6 @@ class RetrievalResult:
 class AnswerResult:
     """问答结果数据类"""
     answer: str
-    confidence: float
     question_type: str
     source_documents: List[Document]
     scores: List[float]
@@ -97,7 +96,12 @@ class VectorRetriever:
 
         try:
             # 执行向量搜索
-            search_results = self.db_manager.search(query=query, k=k, collection_name=collection_name)
+            search_results = self.db_manager.search(
+                query=query,
+                k=k,
+                filter_expression=filter_expression,
+                collection_name=collection_name,
+            )
 
             # 过滤低相似度结果
             results = []
@@ -108,14 +112,15 @@ class VectorRetriever:
             logger.info(f"在集合 '{collection_name}' 中检索查询: '{query}', 返回 {len(results)} 个高质量结果")
             return results
 
-        except Exception as e:
-            logger.error(f"在集合 '{collection_name}' 中检索失败: {e}")
-            return []
+        except Exception:
+            logger.exception("在集合 '%s' 中检索失败", collection_name)
+            raise
 
     def answer_question(self,
                         question: str,
                         collection_name: str,
-                        k: int = 5) -> AnswerResult:
+                        k: int = 5,
+                        filter_expression: str = None) -> AnswerResult:
         """
         回答问题
 
@@ -123,6 +128,7 @@ class VectorRetriever:
             question: 问题文本
             collection_name: Milvus 集合名称
             k: 上下文文档数量
+            filter_expression: Milvus 元数据过滤表达式
 
         Returns:
             回答结果
@@ -135,7 +141,8 @@ class VectorRetriever:
             relevant_docs_with_scores = self.search_similar_content(
                 query=question,
                 collection_name=collection_name,
-                k=k
+                k=k,
+                filter_expression=filter_expression,
             )
 
             # 3. 构建上下文 (即使为空也构建空上下文)
@@ -154,12 +161,8 @@ class VectorRetriever:
             # 4. 生成回答 (使用 LLM)
             answer = self._generate_answer_with_llm(question, context)
 
-            # 5. 计算置信度
-            confidence = self._calculate_confidence(scores)
-
             return AnswerResult(
                 answer=answer,
-                confidence=confidence,
                 question_type=question_type,
                 source_documents=source_documents,
                 scores=scores
@@ -169,7 +172,6 @@ class VectorRetriever:
             logger.error(f"回答问题失败: {e}")
             return AnswerResult(
                 answer=f"处理问题时出现错误: {str(e)}",
-                confidence=0.0,
                 question_type="错误",
                 source_documents=[],
                 scores=[]
@@ -216,33 +218,6 @@ class VectorRetriever:
             logger.error(f"LLM 生成失败: {e}")
             return "抱歉，生成回答时出现错误，请稍后再试。"
 
-    def _calculate_confidence(self, scores: List[float]) -> float:
-        """
-        计算回答置信度
-
-        Args:
-            scores: 相似度分数列表
-
-        Returns:
-            置信度分数 (0-1)
-        """
-        if not scores:
-            return 0.0
-
-        # 基于最高相似度分数和结果数量计算置信度
-        max_score = max(scores)
-        avg_score = sum(scores) / len(scores)
-
-        # 结果数量权重
-        count_weight = min(len(scores) / 5.0, 1.0)
-
-        # 综合置信度
-        confidence = (max_score * 0.6 + avg_score * 0.4) * count_weight
-
-        return min(confidence, 1.0)
-
-
-
     def get_statistics(self, collection_name: str) -> Dict[str, Any]:
         """
         获取检索统计信息
@@ -253,7 +228,7 @@ class VectorRetriever:
         Returns:
             统计信息字典
         """
-        db_info = self.db_manager.get_database_info()
+        db_info = self.db_manager.get_database_info(collection_name)
 
         stats = {
             "database_info": db_info,
@@ -308,7 +283,7 @@ def main():
 
         result = retriever.answer_question(question, collection_name=collection_name)
         print(f"回答: {result.answer}")
-        print(f"置信度: {result.confidence:.2f}")
+        print(f"检索分数: {result.scores}")
         print(f"问题类型: {result.question_type}")
         print(f"参考来源数: {len(result.source_documents)}")
 

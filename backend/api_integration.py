@@ -4,8 +4,8 @@ API集成模块
 """
 
 from flask import Blueprint, request, jsonify
-import os
 import logging
+import tempfile
 from typing import Dict, Any, List
 from werkzeug.utils import secure_filename
 from pathlib import Path
@@ -25,10 +25,8 @@ vector_bp = Blueprint('vector', __name__, url_prefix='/api/vector')
 vector_manager: VectorDatabaseManager = None
 vector_retriever: VectorRetriever = None
 
-# 临时上传目录
-UPLOAD_FOLDER = '/tmp/vector_uploads'
-if not os.path.exists(UPLOAD_FOLDER):
-    os.makedirs(UPLOAD_FOLDER)
+ALLOWED_UPLOAD_EXTENSIONS = {'.txt', '.pdf', '.csv', '.docx', '.doc', '.xlsx', '.xls'}
+MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 
 # 配置日志
 logging.basicConfig(level=logging.INFO)
@@ -59,68 +57,16 @@ def init_vector_system(
         return False
 
 
-@vector_bp.route('/upload_document', methods=['POST'])
-def upload_document():
-    """上传并处理文档"""
-    global vector_manager
-
-    if not vector_manager:
-        return jsonify({
-            'success': False,
-            'message': '向量系统未初始化'
-        }), 400
-
-    try:
-        data = request.get_json()
-        if not data or 'file_path' not in data or 'collection_name' not in data:
-            return jsonify({
-                'success': False,
-                'message': '请提供 file_path 和 collection_name 参数'
-            }), 400
-
-        file_path = data['file_path']
-        collection_name = data['collection_name']
-
-        # 检查文件是否存在
-        if not os.path.exists(file_path):
-            return jsonify({
-                'success': False,
-                'message': f'文件不存在: {file_path}'
-            }), 400
-
-        # 处理文档
-        success = vector_manager.process_file(file_path, collection_name)
-
-        if success:
-            # 获取数据库信息
-            db_info = vector_manager.get_database_info(collection_name)
-
-            return jsonify({
-                'success': True,
-                'message': f'文档处理成功: {file_path}',
-                'database_info': db_info
-            })
-        else:
-            return jsonify({
-                'success': False,
-                'message': f'文档处理失败: {file_path}'
-            }), 500
-
-    except Exception as e:
-        logger.error(f"文档上传API错误: {str(e)}")
-        return jsonify({
-            'success': False,
-            'message': f'文档处理失败: {str(e)}'
-        }), 500
-
-
 @vector_bp.route('/upload_file', methods=['POST'])
 def upload_file():
-    """上传文件流处理"""
+    """通过 multipart 上传文档，并在处理后清理临时文件。"""
     global vector_manager
 
     if not vector_manager:
         return jsonify({'success': False, 'message': '向量系统未初始化'}), 400
+
+    if request.content_length is not None and request.content_length > MAX_UPLOAD_BYTES:
+        return jsonify({'success': False, 'message': '文件超过 20 MiB 限制'}), 413
 
     if 'file' not in request.files:
         return jsonify({'success': False, 'message': '未找到文件部分'}), 400
@@ -128,33 +74,34 @@ def upload_file():
     file = request.files['file']
     collection_name = request.form.get('collection_name', 'agent_rag')
 
-    if file.filename == '':
+    if not file.filename:
         return jsonify({'success': False, 'message': '未选择文件'}), 400
 
-    if file:
-        filename = secure_filename(file.filename)
-        file_path = os.path.join(UPLOAD_FOLDER, filename)
-        file.save(file_path)
+    suffix = Path(file.filename).suffix.lower()
+    if suffix not in ALLOWED_UPLOAD_EXTENSIONS:
+        return jsonify({'success': False, 'message': '不支持的文件类型'}), 400
 
-        try:
-            success = vector_manager.process_file(file_path, collection_name)
-            if success:
-                db_info = vector_manager.get_database_info(collection_name)
-                return jsonify({
-                    'success': True,
-                    'message': f'文件上传并处理成功: {filename}',
-                    'database_info': db_info
-                })
-            else:
-                 return jsonify({'success': False, 'message': '文件处理失败'}), 500
-        except Exception as e:
-             return jsonify({'success': False, 'message': str(e)}), 500
-        finally:
-            # 可选：处理完后删除临时文件，或者保留
-            # os.remove(file_path)
-            pass
+    stem = secure_filename(Path(file.filename).stem)
+    filename = f"{stem or 'document'}{suffix}"
 
-    return jsonify({'success': False, 'message': '上传失败'}), 500
+    try:
+        with tempfile.TemporaryDirectory(prefix='bale_knowledge_') as upload_dir:
+            file_path = Path(upload_dir) / filename
+            file.save(file_path)
+            success = vector_manager.process_file(str(file_path), collection_name)
+            if not success:
+                return jsonify({'success': False, 'message': '文件处理失败'}), 500
+
+            db_info = vector_manager.get_database_info(collection_name)
+
+        return jsonify({
+            'success': True,
+            'message': f'文件上传并处理成功: {filename}',
+            'database_info': db_info
+        })
+    except Exception:
+        logger.exception("文件上传API错误")
+        return jsonify({'success': False, 'message': '文件处理失败'}), 500
 
 
 @vector_bp.route('/query', methods=['POST'])
@@ -181,13 +128,17 @@ def query_documents():
         k = data.get('k', 5)  # 返回结果数量
 
         # 执行查询
-        result = vector_retriever.answer_question(question, k=k, collection_name=collection_name)
+        result = vector_retriever.answer_question(
+            question,
+            k=k,
+            collection_name=collection_name,
+            filter_expression=data.get('filter_expression'),
+        )
 
         return jsonify({
             'success': True,
             'question': question,
             'answer': result.answer,
-            'confidence': result.confidence,
             'question_type': result.question_type,
             'sources': [
                 {
@@ -231,7 +182,12 @@ def search_similar():
         k = data.get('k', 5)
 
         # 执行相似性搜索
-        results = vector_retriever.search_similar_content(query, k=k, collection_name=collection_name)
+        results = vector_retriever.search_similar_content(
+            query,
+            k=k,
+            collection_name=collection_name,
+            filter_expression=data.get('filter_expression'),
+        )
 
         return jsonify({
             'success': True,
@@ -308,7 +264,13 @@ def clear_collection():
     collection_name = data['collection_name']
 
     try:
-        vector_manager.clear_database(collection_name)
+        cleared = vector_manager.clear_database(collection_name)
+        if not cleared:
+            return jsonify({
+                'success': False,
+                'message': f"集合 '{collection_name}' 不存在"
+            }), 404
+
         return jsonify({
             'success': True,
             'message': f"集合 '{collection_name}' 已清空"
