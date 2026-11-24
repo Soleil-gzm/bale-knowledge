@@ -87,16 +87,20 @@ def test_retriever_applies_threshold_without_hiding_filter():
 
 
 def test_search_api_passes_metadata_filter(monkeypatch):
-    class FakeRetriever:
+    class FakeRetrievalService:
         def __init__(self):
             self.kwargs = None
 
-        def search_similar_content(self, query, **kwargs):
+        def search_sync(self, query, **kwargs):
             self.kwargs = kwargs
-            return [(Document(page_content="matched", metadata={"kb_id": "docs"}), 0.8)]
+            return [SearchHit("matched", 0.8, "docs", {"kb_id": "docs"})]
 
-    retriever = FakeRetriever()
-    monkeypatch.setattr(api_integration, "vector_retriever", retriever)
+    retriever = FakeRetrievalService()
+    monkeypatch.setattr(
+        api_integration,
+        "services",
+        SimpleNamespace(retrieval=retriever),
+    )
     app = Flask(__name__)
     app.register_blueprint(api_integration.vector_bp)
 
@@ -110,21 +114,36 @@ def test_search_api_passes_metadata_filter(monkeypatch):
     )
 
     assert response.status_code == 200
-    assert response.get_json()["results"][0]["score"] == 0.8
-    assert retriever.kwargs["filter_expression"] == 'kb_id == "docs"'
+    assert response.get_json() == {
+        "success": True,
+        "query": "query",
+        "results": [{
+            "content": "matched",
+            "metadata": {"kb_id": "docs"},
+            "score": 0.8,
+        }],
+    }
+    assert retriever.kwargs == {
+        "top_k": 5,
+        "namespace": "docs",
+        "filter_expression": 'kb_id == "docs"',
+    }
 
 
 def test_query_api_does_not_report_synthetic_confidence(monkeypatch):
-    class FakeRetriever:
-        def answer_question(self, question, **kwargs):
-            return SimpleNamespace(
+    class FakeGenerationService:
+        def answer(self, question, **kwargs):
+            return Answer(
                 answer="answer",
                 question_type="通用查询",
-                source_documents=[],
-                scores=[],
+                sources=[SearchHit("evidence", 0.8, "docs", {"source": "guide.md"})],
             )
 
-    monkeypatch.setattr(api_integration, "vector_retriever", FakeRetriever())
+    monkeypatch.setattr(
+        api_integration,
+        "services",
+        SimpleNamespace(generation=FakeGenerationService()),
+    )
     app = Flask(__name__)
     app.register_blueprint(api_integration.vector_bp)
 
@@ -134,7 +153,17 @@ def test_query_api_does_not_report_synthetic_confidence(monkeypatch):
     )
 
     assert response.status_code == 200
-    assert "confidence" not in response.get_json()
+    assert response.get_json() == {
+        "success": True,
+        "question": "question",
+        "answer": "answer",
+        "question_type": "通用查询",
+        "sources": [{
+            "content": "evidence",
+            "metadata": {"source": "guide.md"},
+            "score": 0.8,
+        }],
+    }
 
 
 def test_legacy_answer_question_converts_domain_answer_to_answer_result():

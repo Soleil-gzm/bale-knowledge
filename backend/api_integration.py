@@ -1,34 +1,28 @@
-"""
-API集成模块
-将向量数据库功能集成到Flask应用中
-"""
+"""只负责 HTTP 校验与序列化的 Flask Adapter。"""
 
-from flask import Blueprint, request, jsonify
+from __future__ import annotations
+
 import logging
 import tempfile
-from typing import Dict, Any, List
-from werkzeug.utils import secure_filename
 from pathlib import Path
+from typing import TYPE_CHECKING
+
 from dotenv import load_dotenv
+from flask import Blueprint, jsonify, request
+from werkzeug.utils import secure_filename
+
+if TYPE_CHECKING:
+    from .composition import ServiceContainer
 
 env_path = Path(__file__).parent / '.env'
 load_dotenv(dotenv_path=env_path)
 
-from .vector_db_manager import VectorDatabaseManager
-from .vector_retriever import VectorRetriever
-from .document_loader import DocumentLoader
-
-# 创建蓝图
 vector_bp = Blueprint('vector', __name__, url_prefix='/api/vector')
-
-# 全局变量存储向量系统实例
-vector_manager: VectorDatabaseManager = None
-vector_retriever: VectorRetriever = None
+services: ServiceContainer | None = None
 
 ALLOWED_UPLOAD_EXTENSIONS = {'.txt', '.pdf', '.csv', '.docx', '.doc', '.xlsx', '.xls'}
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 
-# 配置日志
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -39,30 +33,30 @@ def init_vector_system(
     embedding_model: str = None,
     dashscope_api_key: str = None
 ):
-    """初始化向量系统"""
-    global vector_manager, vector_retriever
+    """保留旧初始化入口，具体依赖仅在 composition 中组装。"""
+    global services
 
     try:
-        vector_manager = VectorDatabaseManager(
+        from .composition import create_services
+
+        services = create_services(
             milvus_host=milvus_host,
             milvus_port=milvus_port,
             embedding_model=embedding_model,
-            dashscope_api_key=dashscope_api_key
+            dashscope_api_key=dashscope_api_key,
         )
-        vector_retriever = VectorRetriever(vector_manager)
-        logger.info(f"向量系统初始化成功，连接到 Milvus at {milvus_host}:{milvus_port}")
+        logger.info("知识库应用服务初始化成功")
         return True
     except Exception as e:
-        logger.error(f"向量系统初始化失败: {str(e)}")
+        logger.error(f"知识库应用服务初始化失败: {str(e)}")
         return False
 
 
 @vector_bp.route('/upload_file', methods=['POST'])
 def upload_file():
     """通过 multipart 上传文档，并在处理后清理临时文件。"""
-    global vector_manager
 
-    if not vector_manager:
+    if not services:
         return jsonify({'success': False, 'message': '向量系统未初始化'}), 400
 
     if request.content_length is not None and request.content_length > MAX_UPLOAD_BYTES:
@@ -88,11 +82,14 @@ def upload_file():
         with tempfile.TemporaryDirectory(prefix='bale_knowledge_') as upload_dir:
             file_path = Path(upload_dir) / filename
             file.save(file_path)
-            success = vector_manager.process_file(str(file_path), collection_name)
-            if not success:
+            chunk_count = services.ingestion.ingest_file(
+                str(file_path),
+                namespace=collection_name,
+            )
+            if not chunk_count:
                 return jsonify({'success': False, 'message': '文件处理失败'}), 500
 
-            db_info = vector_manager.get_database_info(collection_name)
+            db_info = services.collections.info(collection_name)
 
         return jsonify({
             'success': True,
@@ -107,9 +104,8 @@ def upload_file():
 @vector_bp.route('/query', methods=['POST'])
 def query_documents():
     """查询文档"""
-    global vector_retriever
 
-    if not vector_retriever:
+    if not services:
         return jsonify({
             'success': False,
             'message': '向量系统未初始化'
@@ -128,10 +124,10 @@ def query_documents():
         k = data.get('k', 5)  # 返回结果数量
 
         # 执行查询
-        result = vector_retriever.answer_question(
+        result = services.generation.answer(
             question,
-            k=k,
-            collection_name=collection_name,
+            top_k=k,
+            namespace=collection_name,
             filter_expression=data.get('filter_expression'),
         )
 
@@ -142,11 +138,11 @@ def query_documents():
             'question_type': result.question_type,
             'sources': [
                 {
-                    'content': doc.page_content,
-                    'metadata': doc.metadata,
-                    'score': score
+                    'content': hit.content,
+                    'metadata': hit.metadata,
+                    'score': hit.score
                 }
-                for doc, score in zip(result.source_documents, result.scores)
+                for hit in result.sources
             ]
         })
 
@@ -161,9 +157,8 @@ def query_documents():
 @vector_bp.route('/search', methods=['POST'])
 def search_similar():
     """相似性搜索"""
-    global vector_retriever
 
-    if not vector_retriever:
+    if not services:
         return jsonify({
             'success': False,
             'message': '向量系统未初始化'
@@ -182,10 +177,10 @@ def search_similar():
         k = data.get('k', 5)
 
         # 执行相似性搜索
-        results = vector_retriever.search_similar_content(
+        results = services.retrieval.search_sync(
             query,
-            k=k,
-            collection_name=collection_name,
+            top_k=k,
+            namespace=collection_name,
             filter_expression=data.get('filter_expression'),
         )
 
@@ -194,11 +189,11 @@ def search_similar():
             'query': query,
             'results': [
                 {
-                    'content': doc.page_content,
-                    'metadata': doc.metadata,
-                    'score': score
+                    'content': hit.content,
+                    'metadata': hit.metadata,
+                    'score': hit.score
                 }
-                for doc, score in results
+                for hit in results
             ]
         })
 
@@ -213,9 +208,8 @@ def search_similar():
 @vector_bp.route('/collection_info', methods=['GET'])
 def get_collection_info():
     """获取集合信息"""
-    global vector_manager
 
-    if not vector_manager:
+    if not services:
         return jsonify({
             'success': False,
             'message': '向量系统未初始化'
@@ -229,7 +223,7 @@ def get_collection_info():
         }), 400
 
     try:
-        db_info = vector_manager.get_database_info(collection_name)
+        db_info = services.collections.info(collection_name)
         return jsonify({
             'success': True,
             'database_info': db_info
@@ -246,9 +240,8 @@ def get_collection_info():
 @vector_bp.route('/clear_collection', methods=['POST'])
 def clear_collection():
     """清空集合"""
-    global vector_manager
 
-    if not vector_manager:
+    if not services:
         return jsonify({
             'success': False,
             'message': '向量系统未初始化'
@@ -264,7 +257,7 @@ def clear_collection():
     collection_name = data['collection_name']
 
     try:
-        cleared = vector_manager.clear_database(collection_name)
+        cleared = services.collections.clear(collection_name)
         if not cleared:
             return jsonify({
                 'success': False,
@@ -301,12 +294,15 @@ def internal_error(error):
     }), 500
 
 
-def register_vector_routes(app):
-    """注册向量数据库路由到Flask应用"""
+def register_vector_routes(app, service_container: ServiceContainer | None = None):
+    """注册 Flask 路由，并支持从组合根注入应用服务。"""
+    global services
+
+    if service_container is not None:
+        services = service_container
+    else:
+        with app.app_context():
+            init_vector_system()
+
     app.register_blueprint(vector_bp)
-
-    # 自动初始化向量系统
-    with app.app_context():
-        init_vector_system()
-
-    logger.info("向量数据库API路由已注册")
+    logger.info("知识库 API 路由已注册")

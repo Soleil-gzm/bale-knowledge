@@ -1,5 +1,6 @@
 from io import BytesIO
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from flask import Flask
@@ -7,34 +8,40 @@ from flask import Flask
 from backend import api_integration
 
 
-class FakeManager:
+class FakeIngestion:
     def __init__(self):
         self.file_path = None
-        self.collection_name = None
+        self.namespace = None
         self.content = None
+        self.chunk_count = 1
 
-    def process_file(self, file_path, collection_name):
+    def ingest_file(self, file_path, *, namespace):
         self.file_path = file_path
-        self.collection_name = collection_name
+        self.namespace = namespace
         self.content = Path(file_path).read_bytes()
-        return True
+        return self.chunk_count
 
-    def get_database_info(self, collection_name):
-        return {"collection_name": collection_name, "document_count": 1}
+
+class FakeCollections:
+    def info(self, namespace):
+        return {"collection_name": namespace, "document_count": 1}
 
 
 @pytest.fixture
-def client_and_manager(monkeypatch):
-    manager = FakeManager()
-    monkeypatch.setattr(api_integration, "vector_manager", manager)
+def client_and_services(monkeypatch):
+    container = SimpleNamespace(
+        ingestion=FakeIngestion(),
+        collections=FakeCollections(),
+    )
+    monkeypatch.setattr(api_integration, "services", container)
     app = Flask(__name__)
     app.register_blueprint(api_integration.vector_bp)
-    return app.test_client(), manager
+    return app.test_client(), container
 
 
 @pytest.mark.parametrize("filename", ["notes.txt", "report.pdf"])
-def test_multipart_upload_uses_temporary_file(client_and_manager, filename):
-    client, manager = client_and_manager
+def test_multipart_upload_uses_temporary_file(client_and_services, filename):
+    client, container = client_and_services
 
     response = client.post(
         "/api/vector/upload_file",
@@ -46,15 +53,33 @@ def test_multipart_upload_uses_temporary_file(client_and_manager, filename):
     )
 
     assert response.status_code == 200
-    assert response.get_json()["success"] is True
-    assert manager.content == b"document content"
-    assert manager.collection_name == "docs"
-    assert Path(manager.file_path).suffix == Path(filename).suffix
-    assert not Path(manager.file_path).exists()
+    assert response.get_json() == {
+        "success": True,
+        "message": f"文件上传并处理成功: {filename}",
+        "database_info": {"collection_name": "docs", "document_count": 1},
+    }
+    assert container.ingestion.content == b"document content"
+    assert container.ingestion.namespace == "docs"
+    assert Path(container.ingestion.file_path).suffix == Path(filename).suffix
+    assert not Path(container.ingestion.file_path).exists()
 
 
-def test_upload_rejects_unsupported_extension(client_and_manager):
-    client, manager = client_and_manager
+def test_upload_returns_error_when_no_chunks_are_written(client_and_services):
+    client, container = client_and_services
+    container.ingestion.chunk_count = 0
+
+    response = client.post(
+        "/api/vector/upload_file",
+        data={"file": (BytesIO(b""), "empty.txt")},
+        content_type="multipart/form-data",
+    )
+
+    assert response.status_code == 500
+    assert response.get_json() == {"success": False, "message": "文件处理失败"}
+
+
+def test_upload_rejects_unsupported_extension(client_and_services):
+    client, container = client_and_services
 
     response = client.post(
         "/api/vector/upload_file",
@@ -63,11 +88,11 @@ def test_upload_rejects_unsupported_extension(client_and_manager):
     )
 
     assert response.status_code == 400
-    assert manager.file_path is None
+    assert container.ingestion.file_path is None
 
 
-def test_upload_rejects_oversized_request(client_and_manager, monkeypatch):
-    client, manager = client_and_manager
+def test_upload_rejects_oversized_request(client_and_services, monkeypatch):
+    client, container = client_and_services
     monkeypatch.setattr(api_integration, "MAX_UPLOAD_BYTES", 8)
 
     response = client.post(
@@ -77,11 +102,11 @@ def test_upload_rejects_oversized_request(client_and_manager, monkeypatch):
     )
 
     assert response.status_code == 413
-    assert manager.file_path is None
+    assert container.ingestion.file_path is None
 
 
-def test_arbitrary_server_path_upload_is_not_available(client_and_manager):
-    client, manager = client_and_manager
+def test_arbitrary_server_path_upload_is_not_available(client_and_services):
+    client, container = client_and_services
 
     response = client.post(
         "/api/vector/upload_document",
@@ -89,4 +114,4 @@ def test_arbitrary_server_path_upload_is_not_available(client_and_manager):
     )
 
     assert response.status_code == 404
-    assert manager.file_path is None
+    assert container.ingestion.file_path is None

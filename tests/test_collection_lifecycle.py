@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 import pytest
 from flask import Flask
 from langchain_core.documents import Document
@@ -53,26 +55,51 @@ def test_clear_database_only_resets_current_vectorstore(monkeypatch):
     assert dropped == ["other", "current"]
 
 
-def test_clear_collection_api_passes_collection_name(monkeypatch):
-    class FakeManager:
+def make_collection_client(monkeypatch):
+    class FakeCollections:
         def __init__(self):
             self.calls = []
 
-        def clear_database(self, collection_name):
-            self.calls.append(collection_name)
-            return collection_name != "missing"
+        def info(self, namespace):
+            self.calls.append(("info", namespace))
+            return {"collection_name": namespace, "document_count": 1}
 
-    manager = FakeManager()
-    monkeypatch.setattr(api_integration, "vector_manager", manager)
+        def clear(self, namespace):
+            self.calls.append(("clear", namespace))
+            return namespace != "missing"
+
+    collections = FakeCollections()
+    monkeypatch.setattr(
+        api_integration,
+        "services",
+        SimpleNamespace(collections=collections),
+    )
     app = Flask(__name__)
     app.register_blueprint(api_integration.vector_bp)
-    client = app.test_client()
+    return app.test_client(), collections
+
+
+def test_clear_collection_api_passes_collection_name(monkeypatch):
+    client, collections = make_collection_client(monkeypatch)
 
     response = client.post("/api/vector/clear_collection", json={"collection_name": "docs"})
     assert response.status_code == 200
-    assert response.get_json()["success"] is True
+    assert response.get_json() == {"success": True, "message": "集合 'docs' 已清空"}
 
     response = client.post("/api/vector/clear_collection", json={"collection_name": "missing"})
     assert response.status_code == 404
-    assert response.get_json()["success"] is False
-    assert manager.calls == ["docs", "missing"]
+    assert response.get_json() == {"success": False, "message": "集合 'missing' 不存在"}
+    assert collections.calls == [("clear", "docs"), ("clear", "missing")]
+
+
+def test_collection_info_api_uses_collection_service(monkeypatch):
+    client, collections = make_collection_client(monkeypatch)
+
+    response = client.get("/api/vector/collection_info?collection_name=docs")
+
+    assert response.status_code == 200
+    assert response.get_json() == {
+        "success": True,
+        "database_info": {"collection_name": "docs", "document_count": 1},
+    }
+    assert collections.calls == [("info", "docs")]
