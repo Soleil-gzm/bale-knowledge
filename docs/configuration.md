@@ -60,7 +60,7 @@ FLASK_PORT=5000
 FLASK_DEBUG=False
 ```
 
-应用启动时会执行一次 Embedding 验证，并连接 Milvus。任一环节失败请先按[快速启动 §12](quickstart.md#12-常见问题排查)处理，不要通过删除集合绕过。
+应用启动时会执行一次 Embedding 验证，并连接 Milvus：Milvus 连接失败会终止启动；Embedding 失败会记录错误并回退到 HuggingFace（见下文），应修复原始错误而不是依赖回退。处理步骤见[快速启动 §12](quickstart.md#12-常见问题排查)，不要通过删除集合绕过。
 
 ### 3.2 更换生成模型
 
