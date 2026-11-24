@@ -42,6 +42,13 @@ from pymilvus import utility, connections, Collection
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+MILVUS_INDEX_PARAMS = {
+    "metric_type": "COSINE",
+    "index_type": "HNSW",
+    "params": {"M": 16, "efConstruction": 200},
+}
+
+
 class VectorDatabaseManager:
     """向量数据库管理器 (Milvus后端)"""
 
@@ -248,7 +255,8 @@ class VectorDatabaseManager:
                         embedding=self.embeddings,
                         collection_name=target_collection,
                         connection_args={"host": self.milvus_host, "port": self.milvus_port},
-                        drop_old=False # 明确不删除旧的（虽然这里是else分支，本身就不存在）
+                        index_params=MILVUS_INDEX_PARAMS,
+                        drop_old=False
                     )
                     self.collection_name = target_collection
                     logger.info(f"成功创建集合 '{target_collection}' 并插入 {len(documents)} 条文档")
@@ -257,30 +265,9 @@ class VectorDatabaseManager:
                 self.vectorstore.add_documents(documents)
                 logger.info(f"成功向当前集合 '{target_collection}' 追加 {len(documents)} 条文档")
 
-        except Exception as e:
-            # 捕获 Schema 不兼容错误并尝试自动修复（重建）
-            msg = str(e)
-            if "non-exist field" in msg or "inconsistent with defined schema" in msg:
-                 logger.warning(f"检测到 Schema 不兼容 ({e})，尝试重建集合...")
-                 try:
-                     if utility.has_collection(target_collection):
-                         utility.drop_collection(target_collection)
-
-                     self.vectorstore = Milvus.from_documents(
-                        documents=documents,
-                        embedding=self.embeddings,
-                        collection_name=target_collection,
-                        connection_args={"host": self.milvus_host, "port": self.milvus_port},
-                        drop_old=True
-                     )
-                     self.collection_name = target_collection
-                     logger.info(f"集合 '{target_collection}' 已重建并写入数据")
-                 except Exception as re:
-                     logger.error(f"重建集合失败: {re}")
-                     raise re
-            else:
-                logger.error(f"添加文档到Milvus失败: {e}")
-                raise e
+        except Exception:
+            logger.exception("向集合 '%s' 添加文档失败", target_collection)
+            raise
 
     def process_file(self, file_path: str, collection_name: str = None) -> bool:
         """
@@ -372,14 +359,14 @@ class VectorDatabaseManager:
             logger.error(f"生成嵌入向量失败: {e}")
             return []
 
-    def search(self, query: str, k: int = 5, filter_dict: Dict = None, collection_name: Optional[str] = None) -> List[Tuple[Document, float]]:
+    def search(self, query: str, k: int = 5, filter_expression: str = None, collection_name: Optional[str] = None) -> List[Tuple[Document, float]]:
         """
         相似性搜索
 
         Args:
             query: 查询文本
             k: 返回结果数量
-            filter_dict: Milvus目前不支持直接的元数据过滤，此参数保留但暂不使用
+            filter_expression: Milvus 元数据过滤表达式
             collection_name: 指定要搜索的集合名称（可选）
 
         Returns:
@@ -405,16 +392,17 @@ class VectorDatabaseManager:
                 return []
 
         try:
-            if filter_dict:
-                logger.warning("Milvus集成当前不支持直接的元数据过滤，该过滤器将被忽略。")
-
-            results = self.vectorstore.similarity_search_with_score(query=query, k=k)
+            results = self.vectorstore.similarity_search_with_score(
+                query=query,
+                k=k,
+                expr=filter_expression,
+            )
             logger.info(f"搜索查询: '{query}', 返回 {len(results)} 个结果")
             return results
 
-        except Exception as e:
-            logger.error(f"搜索失败: {e}")
-            return []
+        except Exception:
+            logger.exception("搜索失败: %s", target_collection)
+            raise
 
     def get_database_info(self, collection_name: str = None) -> Dict[str, Any]:
         """
@@ -457,15 +445,22 @@ class VectorDatabaseManager:
 
         return info
 
-    def clear_database(self):
-        """清空Milvus集合"""
+    def clear_database(self, collection_name: str = None) -> bool:
+        """删除指定集合；仅在调用方明确要求时执行。"""
+        target_collection = collection_name or self.collection_name
+
         try:
-            if utility.has_collection(self.collection_name):
-                utility.drop_collection(self.collection_name)
+            if not utility.has_collection(target_collection):
+                return False
+
+            utility.drop_collection(target_collection)
+            if target_collection == self.collection_name:
                 self.vectorstore = None
-                logger.info(f"Milvus集合 '{self.collection_name}' 已被删除")
-        except Exception as e:
-            logger.error(f"清空Milvus集合失败: {e}")
+            logger.info(f"Milvus集合 '{target_collection}' 已被删除")
+            return True
+        except Exception:
+            logger.exception("清空Milvus集合失败: %s", target_collection)
+            raise
 
 def main():
     """测试函数"""
