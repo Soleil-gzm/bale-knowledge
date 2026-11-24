@@ -73,6 +73,8 @@ cp .env.example backend/.env
 
 不要将真实 `backend/.env` 或 API Key 提交到 Git。更换 Base URL 时，应确认该服务接受当前认证方式和 OpenAI-compatible Chat Completions 请求。
 
+配置读取顺序、Embedding 备用路径、集合维度约束和前端地址修改见[配置参考](configuration.md)。
+
 ## 4. 准备并检查 Milvus
 
 本仓库目前不包含 Docker Compose、Milvus 配置文件或自动安装脚本。请按照 [Milvus 官方 Standalone 安装文档](https://milvus.io/docs/install_standalone-docker-compose.md)启动兼容版本，或由现有基础设施提供 Milvus 地址。
@@ -317,3 +319,4 @@ npm run build
 - 定期执行默认测试；只有实际启用 Milvus smoke 后，才把集成状态标记为已验证。
 - 不提交密钥、临时上传文件、模型缓存、前端依赖和构建产物。
 - 对公开接口、环境变量或目录职责的修改，应同步更新[架构设计](architecture.md)和 [README](../README.md)。
+- 按目标选择后续阅读：[文档索引](README.md)、[配置参考](configuration.md)、[API 参考](api.md)、[开发与测试](development.md)。

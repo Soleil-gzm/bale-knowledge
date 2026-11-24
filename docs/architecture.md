@@ -6,6 +6,8 @@
 
 领域模型、应用服务和端口已经从 Web 与外部 SDK 中解耦；SQL 元数据、异步 Worker、混合检索和严格证据回答仍属于后续设计，不属于当前实现。
 
+配套文档：[文档索引](README.md)、[快速启动](quickstart.md)、[配置参考](configuration.md)、[API 参考](api.md)、[开发与测试](development.md)。
+
 ## 2. 架构目标与原则
 
 1. **领域与框架解耦**：Flask 只处理 HTTP，Milvus 只作为 VectorStore 的具体实现。

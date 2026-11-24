@@ -4,6 +4,15 @@ Bale Knowledge 是一个基于 Flask、Vue、LangChain 和 Milvus 的文档检�
 
 当前版本已完成基础上传安全、Milvus 集合操作修复以及领域服务解耦。项目仍采用同步文档入库和单向量检索，适合本地开发、协议集成和小规模知识库实验。
 
+## 文档
+
+- [文档索引](docs/README.md)：按目标选择阅读路径。
+- [快速启动](docs/quickstart.md)：安装、环境变量、Milvus 检查与上传/检索/问答示例。
+- [配置参考](docs/configuration.md)：配置优先级、环境变量、模型与集合约束。
+- [API 参考](docs/api.md)：HTTP 路由、请求/响应字段、错误语义与 Python 接口。
+- [架构设计](docs/architecture.md)：分层、领域契约、数据流与扩展点。
+- [开发与测试](docs/development.md)：分层规则、测试矩阵与扩展方式。
+
 ## 核心特性
 
 - **文档入库**：通过 multipart 上传文件，完成加载、递归切分、Embedding 和 Milvus 写入。
@@ -77,8 +86,12 @@ bale-knowledge/
 │   └── vite.config.js
 ├── tests/                        # 单元、契约、API 与 Milvus smoke
 ├── docs/
-│   ├── architecture.md
-│   └── quickstart.md
+│   ├── README.md                 # 文档索引与阅读路径
+│   ├── quickstart.md             # 安装、运行与示例
+│   ├── configuration.md          # 配置、模型与集合约束
+│   ├── api.md                    # HTTP 与 Python 接口参考
+│   ├── architecture.md           # 分层、契约与数据流
+│   └── development.md            # 开发、测试与扩展
 ├── .env.example
 ├── requirements.txt
 ├── requirements-dev.txt
