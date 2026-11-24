@@ -8,7 +8,7 @@ from backend.domain.retriever import Retriever
 from backend.domain.testing import FakeRetriever
 
 
-def test_domain_imports_do_not_require_frameworks_or_external_sdks():
+def test_domain_and_service_imports_do_not_require_frameworks_or_external_sdks():
     project_root = Path(__file__).resolve().parents[1]
     code = """
 import builtins
@@ -26,6 +26,10 @@ from backend.domain.models import Answer, Chunk, SearchHit
 from backend.domain.ports import AnswerGenerator, DocumentProcessor, VectorStore
 from backend.domain.retriever import Retriever
 from backend.domain.testing import FakeRetriever
+from backend.services.collections import CollectionService
+from backend.services.generation import GenerationService
+from backend.services.ingestion import IngestionService
+from backend.services.retrieval import RetrievalService
 """
     result = subprocess.run(
         [sys.executable, "-c", code],
