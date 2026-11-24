@@ -4,6 +4,7 @@ from flask import Flask
 from langchain_core.documents import Document
 
 from backend import api_integration
+from backend.domain.models import Answer, SearchHit
 from backend import vector_db_manager as manager_module
 from backend.vector_db_manager import VectorDatabaseManager
 from backend.vector_retriever import VectorRetriever
@@ -134,3 +135,36 @@ def test_query_api_does_not_report_synthetic_confidence(monkeypatch):
 
     assert response.status_code == 200
     assert "confidence" not in response.get_json()
+
+
+def test_legacy_answer_question_converts_domain_answer_to_answer_result():
+    class FakeGenerationService:
+        def answer(self, question, **kwargs):
+            assert question == "question"
+            assert kwargs == {
+                "namespace": "docs",
+                "top_k": 2,
+                "filter_expression": 'kb_id == "docs"',
+            }
+            return Answer(
+                answer="answer",
+                question_type="通用查询",
+                sources=[SearchHit("evidence", 0.8, "docs", {"source": "guide.md"})],
+            )
+
+    retriever = VectorRetriever.__new__(VectorRetriever)
+    retriever.generation_service = FakeGenerationService()
+
+    result = retriever.answer_question(
+        "question",
+        collection_name="docs",
+        k=2,
+        filter_expression='kb_id == "docs"',
+    )
+
+    assert result.answer == "answer"
+    assert result.question_type == "通用查询"
+    assert result.scores == [0.8]
+    assert len(result.source_documents) == 1
+    assert result.source_documents[0].page_content == "evidence"
+    assert result.source_documents[0].metadata == {"source": "guide.md"}
